@@ -1,81 +1,77 @@
 from flask import Flask, render_template, request
-from .models import DB, User, Tweet
-from .twitter import add_or_update_user
 from os import getenv
-from .predict import predict_user
+from twitoff.predict import predict_user
+from .models import DB, User, Tweet
+from .twitter import add_or_update_user, vectorize_tweet
 
 # Create a "factory" for serving up the app when it is launched 
 def create_app():
-
-    #initializes our Flask app
     app = Flask(__name__)
-
-    # configuration stuff
-    app.config["SQLALCHEMY_TRACK_MODIFICATION"] = False
     app.config['SQLALCHEMY_DATABASE_URI'] = getenv('DATABASE_URI')
-
-    # Connect our database to our app object
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     DB.init_app(app)
 
-    # Make our "Home" or "root" route
-    @app.route('/')
-    def root():
-        # Do this when somebody hits the home page
-        return render_template('base.html', title='Home', users=User.query.all())
+    @app.route("/")
+    def home():
+        users = User.query.all()
+        print(users, flush=True)
+        return render_template('base.html', title="home", users=users)
 
-    # update users with their latest tweets
+    @app.route('/reset')
+    def reset():
+        DB.drop_all()
+        DB.create_all()
+        tweet1_vector = vectorize_tweet('Wow...')
+        sayer = User(id=1, username='sayer')
+        tweet1 = Tweet(
+            id=1, text='Wow...',
+            user=sayer, vect=tweet1_vector)
+        DB.session.add(sayer)
+        DB.session.add(tweet1)
+        DB.session.commit()
+        return render_template('base.html', title='Reset DB')
+
     @app.route('/update')
     def update():
-        users = User.query.all()
-        usernames = [user.username for user in users]
+        usernames = [usr.username for usr in User.query.all()]
         for username in usernames:
             add_or_update_user(username)
-        return render_template('base.html', title="All users have been updated to include their latest tweets.")
+        return render_template('base.html', title='Update')
 
-    # Test another route
-    @app.route('/reset')
-    def test():
-        # removes everything from the DB
-        DB.drop_all()
-        # creates a new DB with indicated tables
-        DB.create_all()
-        # Make some Users
-        # create a user object from our .models class
-        return render_template('base.html', title='Database Reset')
-
-    # This route is NOT just displaying information
-    # This route is going to change our database
     @app.route('/user', methods=['POST'])
-    @app.route('/user/<name>', methods=['GET'])
-    def user(name=None, message=''):
-        # grab the username that the user has put into the input box
-        name = name or request.values['user_name']
-
-        try:
-            if request.method == 'POST':
-                add_or_update_user(name)
-                message = f'User "{name}" was successfully added.'
-            tweets = User.query.filter(User.username == name).one().tweets
-        except Exception as e:
-            message = f'Error adding {name}: {e}'
+    @app.route('/user/<username>', methods=['GET'])
+    def user(username=None, message=''):
+        if request.method == 'GET':
+            tweets = User.query.filter(User.username == username).one().tweets
+        if request.method == 'POST':
             tweets = []
-        else:
-            return render_template('user.html', title=name, tweets=tweets, message=message)
+            try:
+                username = request.values['user_name']
+                add_or_update_user(username)
+                message = f'User "{username}" was successfully added.'
+            except Exception as e:
+                message = f'Error adding {username}: {e}'
+        return render_template(
+            'user.html',
+            title=username,
+            tweets=tweets,
+            message=message
+        )
 
     @app.route('/compare', methods=['POST'])
     def compare():
-        user0, user1 = sorted([request.values['user0'], request.values['user1']])
-
+        user0 = request.values['user0']
+        user1 = request.values['user1']
         if user0 == user1:
-            message = 'Cannot compare a user to themselves!'
-        else: 
-            tweet_text = request.values['tweet_text']
-            prediction = predict_user(user0, user1, tweet_text)
-            message = '''"{}" is more likely to be said 
-                         by {} than {}.'''.format(tweet_text, 
-                                                  user1 if prediction else user0, 
-                                                  user0 if prediction else user1)
+            message = 'Cannot compare a user to themselves'
+        else:
+            text = request.values['tweet_text']
+            prediction = predict_user(user0, user1, text)
+            message = '"{}" is more likely to be said by {} than {}.'.format(
+                text,
+                user1 if prediction else user0,
+                user0 if prediction else user1
+            )
         return render_template('prediction.html', title='Prediction', message=message)
 
     return app
-
